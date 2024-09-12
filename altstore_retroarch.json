@@ -21,7 +21,7 @@
       "beta": false,
       "versions": [
         {
-          "version": "1",
+          "version": "1.19.1",
           "date": "2024-06-05T00:45:33Z",
           "localizedDescription": "Too much awesome stuff to fit in this little space! Check out the blog at libretro.com.",
           "downloadURL": "https://buildbot.libretro.com/stable/1.19.1/apple/ios-arm64/RetroArch.ipa",
