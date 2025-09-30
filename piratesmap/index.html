@@ -95,6 +95,7 @@
             .leaflet-control-markers-header > div:last-child {
                 float: right;
             }
+            .leaflet-control-markers-analyzeicon,
             .leaflet-control-markers-addicon {
                 font-size: 22px;
                 float: right;
@@ -112,11 +113,18 @@
             .leaflet-popup-content a {
                 cursor: pointer;
             }
+            .leaflet-control-markers-store:active
+             {
+                cursor: progress;
+                filter: invert();
+            }
+            .cursor-add-shortcut{
+                cursor: alias;
+            }
         </style>
     </head>
     <body>
-        <div id='map' style="height: 100vh; width: 90%; margin-top:5px; float: left;"></div>
-        <div id='markers-container' style="width: 10%; margin-top:5px; float: right"><ul id="markers-list"></ul></div>
+        <div id='map' style="height: 98vh; width: 100%; margin-top:5px; float: left;"></div>
 
         <script>
 	        function getStyleSheetByFileName(fileName) {
@@ -142,38 +150,65 @@
 
             /* 5120x3208 pixels, PxPerLong = 134.1, PxPerLat = 193.33, LeftLong = 96,744W, RightLong = 58,563, TopLat = 30,279N, BotLat = 13,687N */
             const minLat = 30.279;
-            const minLon = -96.744;
+            const minLng = -96.744;
             const maxLat = 13.687;
-            const maxLon = -58.563;
-            const compiledMap = L.imageOverlay('map/PiratesMapFull.png', [L.latLng(minLat, minLon), L.latLng(maxLat, maxLon)]);
-            const baseMap = L.imageOverlay('map/PiratesMapBase.png', [L.latLng(minLat, minLon), L.latLng(maxLat, maxLon)]);
+            const maxLng = -58.563;
+            const maxX=5120
+            const maxY=3208
+            const distLat=maxLat-minLat
+            const distLng=maxLng-minLng
+            const pxPerLat=maxY/distLat
+            const pxPerLng=maxX/distLng
 
-            const fullOverlay = L.imageOverlay('map/PiratesMapOverlayFull.png', [L.latLng(minLat, minLon), L.latLng(maxLat, maxLon)]);
-            const overlay1560 = L.imageOverlay('map/PiratesMapOverlay1560.png', [L.latLng(minLat, minLon), L.latLng(maxLat, maxLon)]);
-            const overlay1600 = L.imageOverlay('map/PiratesMapOverlay1600.png', [L.latLng(minLat, minLon), L.latLng(maxLat, maxLon)]);
-            const overlay1620 = L.imageOverlay('map/PiratesMapOverlay1620.png', [L.latLng(minLat, minLon), L.latLng(maxLat, maxLon)]);
-            const overlay1640 = L.imageOverlay('map/PiratesMapOverlay1640.png', [L.latLng(minLat, minLon), L.latLng(maxLat, maxLon)]);
-            const overlay1660 = L.imageOverlay('map/PiratesMapOverlay1660.png', [L.latLng(minLat, minLon), L.latLng(maxLat, maxLon)]);
-            const overlay1680 = L.imageOverlay('map/PiratesMapOverlay1680.png', [L.latLng(minLat, minLon), L.latLng(maxLat, maxLon)]);
+            L.CRS.PiratesCRS = L.extend({}, L.CRS.Simple, {
+                transformation: new L.Transformation(0.1*pxPerLng, 0, 0.1*pxPerLat, 0) // Example: scaling and y-axis inversion
+            });
+
+            const mapBounds=[L.latLng(minLat, minLng), L.latLng(maxLat, maxLng)];
+
+            const compiledMap = L.imageOverlay('map/PiratesMapFull.png', mapBounds);
+            const baseMap = L.imageOverlay('map/PiratesMapBase.png', mapBounds);
+
+            const fullOverlay = L.imageOverlay('map/PiratesMapOverlayFull.png', mapBounds);
+            const overlay1560 = L.imageOverlay('map/PiratesMapOverlay1560.png', mapBounds);
+            const overlay1600 = L.imageOverlay('map/PiratesMapOverlay1600.png', mapBounds);
+            const overlay1620 = L.imageOverlay('map/PiratesMapOverlay1620.png', mapBounds);
+            const overlay1640 = L.imageOverlay('map/PiratesMapOverlay1640.png', mapBounds);
+            const overlay1660 = L.imageOverlay('map/PiratesMapOverlay1660.png', mapBounds);
+            const overlay1680 = L.imageOverlay('map/PiratesMapOverlay1680.png', mapBounds);
 
             // Generate description popups for each city
             function onEachCityFeature(feature, layer) {
 		        let popupContent = `<b>${feature.properties.name} - ${feature.properties.location}</b>`;
+                citiesLayer.cities[feature.properties.name]=layer;
                 if (feature.properties.link) {
-                    popupContent += `<br/>See also: <a href="#" onClick="autopopup=true;searchControl.searchText('${feature.properties.link}');">${feature.properties.link}</a>`;
+                    popupContent += `<br/>See also: <a href="#" class="citylink" >${feature.properties.link}</a>`;
                 }
                 popupContent += `<p>${feature.properties.text}</p>`;
-                popupContent += `<p>(Eras: ${feature.properties.eras})</p>`;
+                if (feature.properties.eras.length==6) {
+                    popupContent += `<p>(Eras: All)</p>`;
+                } else {
+                    popupContent += `<p>(Eras: ${feature.properties.eras})</p>`;
+                }
 
 		        if (feature.properties && feature.properties.popupContent) {
 			        popupContent += feature.properties.popupContent;
 		        }
 
 		        layer.bindPopup(popupContent);
+                layer.on("popupopen",function (e){
+                    let linkclick=function(){
+                        citiesLayer.cities[this.toString()].openPopup();                        
+                    }
+                    if (this.getProps().link) {
+                        this.getPopup().getElement().getElementsByClassName("citylink")[0].onclick=linkclick.bind(this.getProps().link);  
+                    }
+                })
 	        }
 
             // TODO: Separate by time period, so only relevant cities are clickable?
             var citiesLayer = L.layerGroup();
+            citiesLayer.cities={};
             L.geoJSON(cities, {
                 onEachFeature: onEachCityFeature,
                 pointToLayer(feature, latlng) {
@@ -188,7 +223,24 @@
 		        }
             }).addTo(citiesLayer);
 
-           var latlngLayer = L.latlngGraticule({
+            function reorderCities(era){
+                // For a given era, reorders linked cities, so the current city is on top and clickable
+                let c={};
+                citiesLayer.getLayers()[0].eachLayer(e=>{
+                    c[e.getProps().name]=e;
+                });
+                cities.features.filter(e=>{return e.properties.link})
+                .filter(e=>{return e.properties.eras.includes(era)})
+                .forEach(e=>{
+                    let current=e.properties.name;
+                    let other=e.properties.link;
+                    let currentEl=c[current].getElement();
+                    let otherEl=c[other].getElement()
+                    currentEl.before(otherEl)
+                })
+            }
+
+            var latlngLayer = L.latlngGraticule({
                 showLabel: true,
                 dashArray: [1, 1],
                 zoomInterval: {
@@ -233,23 +285,23 @@
             var storage = localStorage.getItem("storage");
             if (storage) {storage=JSON.parse(storage)}
             else { storage={ 
-                                baseLayer: getKeyByValue(baseMaps,baseMap), 
-                                defaultOverlay: getKeyByValue(mutuallyExclusiveOverlays,fullOverlay), 
-                                latlngOverlay: true, // latlngdefault,
-                                treasure: null, //{latlng:[lat,lon]} treasure._latlng,
-                                inca: null, //{latlng:[lat,lon]} inca._latlng,
-                                evil: null, //{ description: "", city: null, latlng: null },
-                                missionFrom: null, //{ from: null, to: null },
-                                missionTo: null, //{ from: null, to: null },
-                                fleet: null, //{ city: null, description: "", latlng: null },
-                                train: null //{ city: null, description: "", latlng: null }
-                            }
+                    baseLayer: getKeyByValue(baseMaps,baseMap), 
+                    defaultOverlay: getKeyByValue(mutuallyExclusiveOverlays,fullOverlay), 
+                    latlngOverlay: true, // latlngdefault,
+                    treasure: null, //{latlng:[lat,lon]} treasure._latlng,
+                    inca: null, //{latlng:[lat,lon]} inca._latlng,
+                    evil: null, //{ description: "", city: null, latlng: null },
+                    missionFrom: null, //{ from: null, to: null },
+                    missionTo: null, //{ from: null, to: null },
+                    fleet: null, //{ city: null, description: "", latlng: null },
+                    train: null //{ city: null, description: "", latlng: null }
+                }
             }
 
             const map = L.map('map', {
-                crs: L.CRS.Simple,
-                minZoom: 5,
-                maxZoom: 10,
+                crs: L.CRS.PiratesCRS,
+                minZoom: 2,
+                maxZoom: 6,
                 wheelPxPerZoomLevel: 20,
                 layers: [
                     baseMaps[storage.baseLayer],
@@ -314,16 +366,24 @@
                             }
                         }
                     }
+                    let era=event.name.split(" ")[0]
+                    if (parseInt(era)){
+                        reorderCities(parseInt(era));
+                    }
+                    storage.latlngOverlay=map.hasLayer(latlngLayer);
+                    localStorage.setItem("storage",JSON.stringify(storage));
                 }
-                storage.latlngOverlay=map.hasLayer(latlngLayer);
-                localStorage.setItem("storage",JSON.stringify(storage));
+
             });          
             var lastBaseLayer=undefined;
+            var lastOverlay=undefined;
             map.on('baselayerchange', function(event) {
                 // if lastBaseLayer is unset, this is the first loading...
                 if ( event.layer == officialMap ) {
                     // if we're switching to official map, we need to make sure latlng is disabled
-                    storage.latLngLayer=map.hasLayer(latlngLayer) // store current value
+                    if (lastBaseLayer) {
+                        storage.latLngLayer=map.hasLayer(latlngLayer) // store current value
+                    }
                     if (map.hasLayer(latlngLayer)) {
                         removeWithTimeout(latlngLayer)
                     }
@@ -352,42 +412,36 @@
                 }
                 if (lastBaseLayer==officialMap) {
                     // switching away from officialMap means we can enable latlng layer again
-                    if(storage.latlngLayer) {
+                    if(storage.latLngLayer) {
                         map.addLayer(latlngLayer);
                     }
                     otherOverlaysControl.addTo(map);
-/*
-                    for (o in otherOverlays) {
-                        layerControl.addOverlay(otherOverlays[o],o);
-                    }
-*/
                 }
                 lastBaseLayer=event.layer;
                 storage.baseLayer=getKeyByValue(baseMaps,lastBaseLayer);
                 localStorage.setItem("storage",JSON.stringify(storage));
             });
 
-            // make sure wi can write "Leogane" and still find "Léogâne"
+            // make sure we can write "Leogane" and still find "Léogâne"
             const normalizeSearch = function (text, records) { // copied function from leaflet-search source
-                    const frecords = {}             
-                    text = text.replace(new RegExp('[.*+?^${}()|[\]\\]','g'), '')
-                    // sanitize remove all special characters               
-                    if (text === '') {
-                      return []
-                    }               
-                    const init = this.options.initial ? '^' : ''
-                    const icase = !this.options.casesensitive ? 'i' : undefined             
-                    const regSearch = new RegExp(init + text, icase)                
-                    for (const key in records) {
-                        // this part makes sure we normalize the key before comparing
-                      if (regSearch.test(key.normalize('NFD').replace(/[\u0300-\u036f]/g, ''))) {
-                        frecords[key] = records[key]
-                      }
-                    }               
-                    return frecords;
+                const frecords = {}             
+                text = text.replace(new RegExp('[.*+?^${}()|[\]\\]','g'), '')
+                // sanitize remove all special characters               
+                if (text === '') {
+                  return []
+                }               
+                const init = this.options.initial ? '^' : ''
+                const icase = !this.options.casesensitive ? 'i' : undefined             
+                const regSearch = new RegExp(init + text, icase)                
+                for (const key in records) {
+                    // this part makes sure we normalize the key before comparing
+                  if (regSearch.test(key.normalize('NFD').replace(/[\u0300-\u036f]/g, ''))) {
+                    frecords[key] = records[key]
+                  }
+                }               
+                return frecords;
             }
 
-            var autopopup=false; // if set, the buildtip will assume a direct search from link, and act on it
             var searchControl = new L.Control.Search({
                 layer: citiesLayer, // The layer to search within
                 propertyName: 'name', // The property containing the label/name to search
@@ -396,16 +450,7 @@
                 initial: false,
                 firstTipSubmit: true,
                 moveToLocation: function(latlng, title, map) {
-                    map.setView(latlng, 8); // Zoom to the found location
-                },
-                buildTip: function(text,val) {
-                    // This is just so we can hijack the search function as a clickable action in city descriptions
-                    if (autopopup) {
-                        autopopup=false; // reset the autopopup
-                        //map.setView(val.layer._latlng, 8); // unnecessary as long as we're alrady accessing from the "twin" city
-                        val.layer.openPopup();
-                    }
-                    return '<a href="#">'+text+'</a>';
+                    map.flyTo(latlng, 5); // Zoom to the found location
                 }
             });
 
@@ -531,6 +576,12 @@
                     case "missiontarget":
                         popupContent = `<b>Mission target</b><p><a onClick="javascript:flyToMissionSource(this);">Show start</a></p>`;
                         break;
+                    case "informant":
+                        popupContent = `<b>Informant</b>`;
+                        if (feature.properties.description) {
+                            popupContent=`<b>${feature.properties.description}</b>`
+                        }
+                            break;
                     default:
                         if (feature.properties.description) {
                             popupContent=`<b>${feature.properties.description}</b>`
@@ -725,6 +776,18 @@
                     b.innerText="Markers";
 
                     var add=L.DomUtil.create('div',null,header);
+                    var analyze=L.DomUtil.create('span', className+"-analyzeicon",add);
+                    analyze.innerText="🗺️";
+                    analyze.onclick=function(){
+                        let analyzeScript=L.DomUtil.create("script");
+                        analyzeScript.setAttribute("type","text/javascript");
+                        analyzeScript.src="analyze.js";
+                        document.getElementsByTagName("script")[0].append(analyzeScript);
+                        analyzeScript.addEventListener('load', function() {
+                            this.onclick=dialog;
+                        }.bind(this));
+                    }.bind(analyze)
+
                     var addIcon=L.DomUtil.create('span', className+"-addicon",add);
                     addIcon.innerText='+';
                     this._addDialog=L.DomUtil.create('div',className+"-add-dialog",add);
@@ -748,8 +811,10 @@
                             addDialog.style.display="unset";   
                             addIcon.innerText="x";
                             map.on("click",this._addOnMapClick,this);
+                            map.getPane("overlayPane").classList.add("cursor-add-shortcut");
                         } else {
                             map.off("click",this._addOnMapClick,this);
+                            map.getPane("overlayPane").classList.remove("cursor-add-shortcut");
                             addDialog.style.display=null;
                             addIcon.innerText="+";
                         }
@@ -759,6 +824,7 @@
                         var addIcon=addDialog.parentNode.getElementsByClassName("leaflet-control-markers-addicon")[0];
                         if (addIcon.innerText=="+") {
                             map.off("click",this._addOnMapClick,this);
+                            map.getPane("overlayPane").classList.remove("cursor-add-shortcut");
                             return false;
                         }
                         var coord = e.latlng;
@@ -925,7 +991,7 @@
                         let marker=markerGroup.getLayer(id);
                         if (map.hasLayer(marker)){
                             console.log(marker);
-                            map.setView(marker._latlng);
+                            map.flyTo(marker._latlng);
                             L.Marker.stopAllBouncingMarkers(true);
                             marker.bounce(1);
                             marker.openPopup();
@@ -1026,8 +1092,12 @@
               console.log("You clicked the map at L.latLng(" + lat + ", " + lng + "), GeoJSON coordinates ["+lng+", "+lat +"]");
             });
             */
-            map.setView(L.latLng(14.65234375, -79.59375), 7);
+            map.setView(L.latLng(24, -78), 3);
             document.getElementById('map').style.cursor = 'crosshair';
+
+            map.attributionControl.addAttribution("Artwork from Sid Meier's Pirates! (1990 - Amiga)")
+            map.attributionControl.addAttribution("Official map and city information from game manual")
+            map.attributionControl.addAttribution("Compiled by Herman Sletteng")
       
         </script>
     </body>
