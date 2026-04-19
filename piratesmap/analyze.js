@@ -89,16 +89,17 @@ async function runAnalysis(imageSource, onProgress = () => {}) {
         return rgba.r < 110 && rgba.g < 110 && rgba.b < 110;
     };
 
-    let properties = { type: "family", description: "Mother" };
+    let properties; // = { type: "family", description: "Mother" };
     if (isInk(10, 9)) {
-        properties = { type: "treasure", description: "Treasure Map" };
+        properties = { type: "treasure" };
     } else {
-        if (isInk(60, 8)) properties = { type: "inca", description: "Inca Treasure" };
+        if (isInk(60, 8)) properties = { type: "inca" };
         else if (isInk(62, 7)) properties = { type: "family", description: "Father" };
         else if (isInk(63, 8)) properties = { type: "family", description: "Sister" };
         else if (isInk(62, 13)) properties = { type: "family", description: "Uncle" };
+        else properties = { type: "family", description: "Mother" };
     }
-    onProgress(`Type: ${properties.description}. Pre-processing content...`);
+    onProgress(`Type: ${properties.description || properties.type}. Pre-processing content...`);
 
     // 3. Sophisticated Cleaning & Marker Extraction
     const { width, height } = image.bitmap;
@@ -204,7 +205,7 @@ if (!isNode) {
     <p style="color: #666; margin-bottom: 20px;">Please upload a screenshot of a map fragment to identify its type and location.</p>
     <canvas id="analyzeCanvas" style="max-width: 100%; height: auto; border: 1px solid #999; display: block; margin-bottom: 15px; background: #222;"></canvas>
     <input id="fileInput" type="file" accept="image/*" style="margin-bottom: 15px; display: block; width: 100%;">
-    <button id="btnAnalyze" style="padding: 12px 24px; cursor: pointer; background: #0078d4; color: white; border: none; border-radius: 4px; font-weight: bold; width: 100%;">
+    <button id="btnAnalyze" style="padding: 12px 24px; cursor: pointer; background: #0078d4; color: white; border: none; border-radius: 4px; width: 100%;">
         Analyze Map Piece <span id="loader" class="analyze-spinner hidden"></span>
     </button>
     
@@ -262,7 +263,7 @@ if (!isNode) {
                     const buffer = await file.arrayBuffer();
                     updateProgress("Initializing analyzer...");
                     const result = await runAnalysis(buffer, updateProgress);
-                    
+                    map.flyTo(result.location, 5);
                     statusCurrent.innerText = "Analysis Complete.";
                     resultBox.classList.remove("hidden");
                     resultBox.innerHTML = `
@@ -274,7 +275,7 @@ if (!isNode) {
                     
                     const importBtn = L.DomUtil.create("button", null, resultBox); 
                     importBtn.innerText = "Import Marker to Map"; 
-                    importBtn.style.cssText = "display: block; margin-top: 12px; width: 100%; padding: 10px; cursor: pointer; background: #28a745; color: white; border: none; border-radius: 4px; font-weight: bold;";
+                    importBtn.style.cssText = "display: block; margin-top: 12px; width: 100%; padding: 10px; cursor: pointer; background: #28a745; color: white; border: none; border-radius: 4px;";
                     importBtn.onclick = () => { markerGroup.addData(result.feature); dlg.close(); map.flyTo(result.location, 5); };
                 } catch (e) { console.error(e); statusCurrent.innerText = "Error: " + e.message; }
                 finally { loader.classList.add("hidden"); btn.disabled = false; }
