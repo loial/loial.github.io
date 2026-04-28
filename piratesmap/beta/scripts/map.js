@@ -64,6 +64,9 @@ const storageDefaults = {
     usePiratesFont: true
 };
 
+let lastClickedCity = null;
+let isAddingMarker = false;
+
 let storage = localStorage.getItem("storage");
 if (storage) {
     storage = JSON.parse(storage);
@@ -104,6 +107,19 @@ function onEachCityFeature(feature, layer) {
         direction: "center",
         className: "city-labels label-" + direction
     });
+    
+    // Intercept clicks for marker binding
+    layer.on('click', (e) => {
+        // Persist lastClickedCity for relocation and binding
+        lastClickedCity = feature;
+
+        if (isAddingMarker) {
+            L.DomEvent.stopPropagation(e);
+            addMarkerToTarget(layer.getLatLng(), feature);
+            return;
+        }
+    });
+
     let popupContent = `<b>${feature.properties.name} - ${feature.properties.location}</b>`;
 
     citiesLayer.cities[feature.properties.name] = layer;
@@ -190,7 +206,8 @@ const panelBaseLayers = [
 
 const panelOverlays = [
     {
-        group: "Eras (Dynamic Map only)",
+        group: "Eras",
+        id: "group-eras",
         layers: Object.keys(mutuallyExclusiveOverlays).map(name => ({
             name: name,
             layer: mutuallyExclusiveOverlays[name],
@@ -200,6 +217,7 @@ const panelOverlays = [
     },
     {
         group: "Settings",
+        id: "group-settings",
         layers: [
             { name: "Pirates Font", layer: L.layerGroup(), active: storage.usePiratesFont, icon: '<span class="panel-icon">🔤</span>' },
             { name: "Lat/Long lines", layer: latlngLayerInstance, active: storage.latlngOverlay, icon: '<span class="panel-icon">🌐</span>' }
@@ -207,6 +225,7 @@ const panelOverlays = [
     },
     {
         group: "Tools",
+        id: "group-tools",
         layers: [
             { name: "Add Marker", layer: L.layerGroup(), icon: '<span class="panel-icon no-checkbox">➕</span>' },
             { name: "Analyze Map Piece", layer: L.layerGroup(), icon: '<span class="panel-icon no-checkbox">🗺️</span>' },
@@ -215,9 +234,23 @@ const panelOverlays = [
     },
     {
         group: "Markers",
+        id: "group-markers",
         layers: [] // Populated dynamically below
     }
 ];
+
+// Monkey-patch L.Control.PanelLayers to preserve group IDs
+const originalAddLayer = L.Control.PanelLayers.prototype._addLayer;
+L.Control.PanelLayers.prototype._addLayer = function (layerDef, overlay, groupName, collapsed) {
+    // Find the group definition to get its ID
+    const groups = overlay ? panelOverlays : panelBaseLayers;
+    const groupDef = groups.find(g => g.group === groupName);
+    
+    // Store group ID on the layer object for later retrieval during _update
+    layerDef.groupId = groupDef ? groupDef.id : null;
+    
+    return originalAddLayer.apply(this, arguments);
+};
 
 const panelControl = L.control.panelLayers(panelBaseLayers, panelOverlays, {
     compact: true,
@@ -256,7 +289,7 @@ function handleOverlayAdd(event) {
     }
     if (event.name === "Store All Markers") {
         localStorage.setItem("markers", JSON.stringify(markerGroup.toGeoJSON()));
-        alert("Markers stored in persistent storage.");
+        showToast("Markers stored in persistent storage.");
         setTimeout(() => map.removeLayer(event.layer), 100);
     }
 
@@ -302,11 +335,25 @@ map.on('baselayerchange', function (event) {
         isInternalSwitch = true;
         try {
             if (isOfficial) {
-                // Leaflet-panel-layers manages its own layers, but we need to ensure
-                // internal state (labels, latlng) syncs with the base map.
+                // Remove all era overlays if on official map
+                for (let o in mutuallyExclusiveOverlays) {
+                    if (map.hasLayer(mutuallyExclusiveOverlays[o])) map.removeLayer(mutuallyExclusiveOverlays[o]);
+                }
                 if (map.hasLayer(latlngLayerInstance)) map.removeLayer(latlngLayerInstance);
             } else {
                 if (storage.latlngOverlay && !map.hasLayer(latlngLayerInstance)) map.addLayer(latlngLayerInstance);
+                
+                // If switching to Dynamic, ensure the default overlay is shown
+                if (isDynamic) {
+                    if (storage.defaultOverlay && !map.hasLayer(mutuallyExclusiveOverlays[storage.defaultOverlay])) {
+                        map.addLayer(mutuallyExclusiveOverlays[storage.defaultOverlay]);
+                    }
+                } else {
+                    // If switching to Static, remove any active era overlays
+                    for (let o in mutuallyExclusiveOverlays) {
+                        if (map.hasLayer(mutuallyExclusiveOverlays[o])) map.removeLayer(mutuallyExclusiveOverlays[o]);
+                    }
+                }
             }
 
             if (!map.hasLayer(citiesLayer)) map.addLayer(citiesLayer);
@@ -333,13 +380,20 @@ map.on('baselayerchange', function (event) {
 const setupInitialState = () => {
     if (storage.baseLayer !== "Official Map") {
         citiesLayer.addTo(map);
+        if (storage.latlngOverlay) latlngLayerInstance.addTo(map);
     }
     
     // Initial body class
     document.body.classList.remove('base-official', 'base-static', 'base-dynamic');
     if (storage.baseLayer === "Official Map") document.body.classList.add('base-official');
     else if (storage.baseLayer === "Compiled Map (Full, static)") document.body.classList.add('base-static');
-    else document.body.classList.add('base-dynamic');
+    else {
+        document.body.classList.add('base-dynamic');
+        // If initial load is dynamic, add the default era overlay
+        if (storage.defaultOverlay) {
+            mutuallyExclusiveOverlays[storage.defaultOverlay].addTo(map);
+        }
+    }
 
     map.setView(L.latLng(24, -78), 3);
     
@@ -410,6 +464,16 @@ function onEachMarkerFeature(feature, layer) {
     
     let popupContent = `<b>${title}</b>`;
     if (feature.properties.description && feature.properties.type !== "family") popupContent += `<p>${feature.properties.description}</p>`;
+    
+    if (feature.properties.city) {
+        popupContent += `<p>City: ${feature.properties.city}</p>`;
+    }
+    
+    // Only allow relocation for non-treasure/inca/family types
+    if (!["treasure", "inca", "family"].includes(feature.properties.type)) {
+        popupContent += `<p><a class="relocatemarker">Relocate to current city</a></p>`;
+    }
+
     if (feature.properties.type === "missionsource") popupContent += `<p><a onClick="map.flyTo(markerGroup.getLayers().find(l=>l.getProps().type=='missiontarget').getLatLng())">Show target</a></p>`;
     if (feature.properties.type === "missiontarget") popupContent += `<p><a onClick="map.flyTo(markerGroup.getLayers().find(l=>l.getProps().type=='missionsource').getLatLng())">Show start</a></p>`;
     
@@ -417,10 +481,64 @@ function onEachMarkerFeature(feature, layer) {
     layer.bindPopup(popupContent);
 }
 
+// Spreads markers bound to the same city in an orbit to prevent overlap
+const markerSpiderLines = L.layerGroup().addTo(map);
+
+function recalculateOrbits() {
+    const cityMarkers = {};
+    markerSpiderLines.clearLayers();
+    
+    // Group markers by city
+    markerGroup.eachLayer(layer => {
+        const props = layer.getProps();
+        if (props.city) {
+            if (!cityMarkers[props.city]) cityMarkers[props.city] = [];
+            cityMarkers[props.city].push(layer);
+        }
+    });
+
+    // Apply angular offsets and draw connection lines
+    for (let city in cityMarkers) {
+        const layers = cityMarkers[city];
+        const cityLayer = citiesLayer.cities[city];
+        if (cityLayer) {
+            const center = cityLayer.getLatLng();
+            const radius = 0.14; // Halved radius for closer proximity
+            layers.forEach((layer, i) => {
+                // Distribute evenly with a base rotation and slight random jitter
+                const deg2rad = Math.PI / 180;
+                const baseAngle = 15 * deg2rad;
+                const jitter = (Math.random() * 20 - 10) * deg2rad;
+                
+                const angle = ((i / layers.length) * 2 * Math.PI) + baseAngle + jitter;
+                const newPos = [
+                    center.lat + radius * Math.sin(angle),
+                    center.lng + radius * Math.cos(angle)
+                ];
+                
+                layer.setLatLng(newPos);
+                
+                // Draw a thin connecting line
+                L.polyline([center, newPos], {
+                    color: '#8b0000', // Dark red to match active theme
+                    weight: 1.5,
+                    dashArray: '3, 3',
+                    opacity: 0.6,
+                    interactive: false
+                }).addTo(markerSpiderLines);
+            });
+        }
+    }
+}
+
 const markerGroup = L.geoJSON(null, {
     onEachFeature: onEachMarkerFeature,
     pointToLayer(feature, latlng) {
-        let options = { draggable: ["treasure", "inca", "family"].includes(feature.properties.type) };
+        let options = { 
+            draggable: ["treasure", "inca", "family"].includes(feature.properties.type) && !feature.properties.city,
+            autoPan: true
+        };
+        
         if (feature.properties.type === "treasure" || feature.properties.type === "inca") options.icon = icons.treasure;
         else if (feature.properties.type === "family") options.icon = icons.family;
         else if (feature.properties.type === "evil") options.icon = icons.enemy;
@@ -428,30 +546,77 @@ const markerGroup = L.geoJSON(null, {
         else if (feature.properties.type === "train") options.icon = icons.train;
         else if (feature.properties.type === "missionsource") options.icon = icons.missionFrom;
         else if (feature.properties.type === "missiontarget") options.icon = icons.missionTo;
+        
         return L.marker(latlng, options);
     }
 }).addTo(map);
 
 // Sync markerGroup with Panel
 markerGroup.on("layeradd", (e) => {
+    const props = e.layer.getProps();
+    const name = props.description || props.type;
     panelControl.addOverlay({
-        name: e.layer.getProps().description || e.layer.getProps().type,
+        // Wrap the name in a class to identify it for custom click behavior
+        name: `<span class="marker-link-text">${name}</span>`,
         layer: e.layer,
         group: "Markers",
-        icon: '<span class="panel-icon no-checkbox">📍</span>'
+        icon: `<span class="panel-icon no-checkbox">${props.city ? '🏙️' : '📍'}</span>`
     });
+    // Trigger orbit update after a small delay to ensure indexing is complete
+    setTimeout(recalculateOrbits, 0);
 });
+
+// Event delegation for custom marker interactions in the panel
+document.addEventListener('click', (event) => {
+    if (event.target.classList.contains('marker-link-text')) {
+        event.preventDefault();
+        event.stopPropagation();
+        
+        // Find the sibling input to get the Leaflet layer ID (stamp)
+        const item = event.target.closest('.leaflet-panel-layers-item');
+        const input = item?.querySelector('input');
+        if (input && input.value) {
+            const marker = markerGroup.getLayer(input.value);
+            if (marker) {
+                map.flyTo(marker.getLatLng(), 5);
+                if (typeof marker.bounce === 'function') marker.bounce(1);
+                marker.openPopup();
+            }
+        }
+    }
+}, true); // Use capture to intercept before the plugin toggles the layer
 
 markerGroup.on("layerremove", (e) => {
     panelControl.removeLayer(e.layer);
+    setTimeout(recalculateOrbits, 0);
 });
 
 let storedMarkers = localStorage.getItem("markers");
-if (storedMarkers) markerGroup.addData(JSON.parse(storedMarkers));
+if (storedMarkers) {
+    markerGroup.addData(JSON.parse(storedMarkers));
+    setTimeout(recalculateOrbits, 100); // Ensure city data is loaded
+}
 
 markerGroup.on("popupopen", (e) => {
+    const source = e.popup._source;
     const delBtn = e.popup._container.querySelector(".deletemarker");
-    if (delBtn) delBtn.onclick = () => markerGroup.removeLayer(e.popup._source);
+    if (delBtn) delBtn.onclick = () => markerGroup.removeLayer(source);
+    
+    const relBtn = e.popup._container.querySelector(".relocatemarker");
+    if (relBtn) relBtn.onclick = () => {
+        if (lastClickedCity) {
+            // Strict type check during relocation
+            if (["treasure", "inca", "family"].includes(source.getProps().type)) {
+                showToast("Treasure/Family cannot be bound to cities!");
+                return;
+            }
+            source.setProps({ city: lastClickedCity.properties.name });
+            showToast(`Relocated to ${lastClickedCity.properties.name}`);
+            recalculateOrbits();
+        } else {
+            showToast("Click a city first to relocate!");
+        }
+    };
 });
 
 // Marker Add Dialog
@@ -478,7 +643,7 @@ function startAddMarkerMode() {
                         .map(t => `<option value="${t}">${t}</option>`).join('')}
                 </select>
                 <input id="markerDesc" type="text" placeholder="Description..." style="width:100%; margin-top:10px; padding: 5px;">
-                <div style="color:red; font-size:11px; margin-top:10px; font-weight: bold;">Click on map to place</div>
+                <div style="color:red; font-size:11px; margin-top:10px; font-weight: bold;">Click on a CITY or any map location</div>
             </form>
         `;
         addMarkerControl.setContent(content);
@@ -489,30 +654,51 @@ function startAddMarkerMode() {
         });
     }
 
+    isAddingMarker = true;
     addMarkerControl.open();
     map.on("click", onMapClickForMarker);
     map.getPane("overlayPane").classList.add("cursor-add-shortcut");
 }
 
 function onMapClickForMarker(e) {
+    addMarkerToTarget(e.latlng, null);
+}
+
+function addMarkerToTarget(latlng, cityFeature) {
     const type = document.getElementById("markerType").value;
     const desc = document.getElementById("markerDesc").value;
+    
+    let properties = { type: type, description: desc };
+    let geometry = { type: "Point", coordinates: [latlng.lng, latlng.lat] };
+    
+    // ONLY bind to city if the type is NOT coordinate-only
+    if (cityFeature && !["treasure", "inca", "family"].includes(type)) {
+        properties.city = cityFeature.properties.name;
+    }
+
     if (type !== "informant") {
         const old = markerGroup.getLayers().find(l => l.getProps().type === type);
         if (old) markerGroup.removeLayer(old);
     }
+
     markerGroup.addData({
         type: "Feature",
-        properties: { type: type, description: desc },
-        geometry: { type: "Point", coordinates: [e.latlng.lng, e.latlng.lat] }
+        properties: properties,
+        geometry: geometry
     });
     
     // Explicit cleanup
     cleanupAddMarkerMode();
     if (addMarkerControl) addMarkerControl.close();
+
+    // Refresh to trigger orbital recalculation
+    const all = markerGroup.toGeoJSON();
+    markerGroup.clearLayers();
+    markerGroup.addData(all);
 }
 
 function cleanupAddMarkerMode() {
+    isAddingMarker = false;
     map.off("click", onMapClickForMarker);
     map.getPane("overlayPane").classList.remove("cursor-add-shortcut");
 }
@@ -536,3 +722,19 @@ updateLabelScale(); // Initialize on load
 
 document.getElementById('map').style.cursor = 'crosshair';
 map.attributionControl.addAttribution("Artwork from Sid Meier's Pirates! (1990 - Amiga) | Manual info | Compiled by Herman Sletteng");
+
+function showToast(message) {
+    const toast = document.createElement('div');
+    toast.className = 'toast-message';
+    toast.innerText = message;
+    document.body.appendChild(toast);
+    
+    // Trigger fade in
+    setTimeout(() => toast.classList.add('visible'), 10);
+    
+    // Fade out and remove
+    setTimeout(() => {
+        toast.classList.remove('visible');
+        setTimeout(() => document.body.removeChild(toast), 300);
+    }, 2000);
+}
