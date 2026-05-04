@@ -40,6 +40,8 @@ const mutuallyExclusiveOverlays = {
     "1680 - Pirates' Sunset": L.imageOverlay('maps/PiratesMapOverlay1680NoLabel.png', mapBounds),
 };
 
+const reefsOverlay = L.imageOverlay('maps/PiratesMapReefs.gif', mapBounds);
+
 const latlngLayerInstance = L.latlngGraticule({
     font: "12px piratesFont",
     showLabel: true,
@@ -61,8 +63,12 @@ const storageDefaults = {
     baseLayer: "Compile Map (dynamic)",
     defaultOverlay: "All cities (all time periods)",
     latlngOverlay: true,
-    usePiratesFont: true
+    usePiratesFont: true,
+    animatedReefs: true
 };
+
+let lastClickedCity = null;
+let isAddingMarker = false;
 
 let storage = localStorage.getItem("storage");
 if (storage) {
@@ -104,6 +110,19 @@ function onEachCityFeature(feature, layer) {
         direction: "center",
         className: "city-labels label-" + direction
     });
+    
+    // Intercept clicks for marker binding
+    layer.on('click', (e) => {
+        // Persist lastClickedCity for relocation and binding
+        lastClickedCity = feature;
+
+        if (isAddingMarker) {
+            L.DomEvent.stopPropagation(e);
+            addMarkerToTarget(layer.getLatLng(), feature);
+            return;
+        }
+    });
+
     let popupContent = `<b>${feature.properties.name} - ${feature.properties.location}</b>`;
 
     citiesLayer.cities[feature.properties.name] = layer;
@@ -188,7 +207,7 @@ const panelBaseLayers = [
     }
 ];
 
-const panelOverlays = [
+const rightOverlays = [
     {
         group: "Eras",
         id: "group-eras",
@@ -204,12 +223,16 @@ const panelOverlays = [
         id: "group-settings",
         layers: [
             { name: "Pirates Font", layer: L.layerGroup(), active: storage.usePiratesFont, icon: '<span class="panel-icon">🔤</span>' },
-            { name: "Lat/Long lines", layer: latlngLayerInstance, active: storage.latlngOverlay, icon: '<span class="panel-icon">🌐</span>' }
+            { name: "Lat/Long lines", layer: latlngLayerInstance, active: storage.latlngOverlay, icon: '<span class="panel-icon">🌐</span>' },
+            { name: "Animated reefs", layer: reefsOverlay, active: storage.animatedReefs, icon: '<span class="panel-icon">🌊</span>' }
         ]
-    },
+    }
+];
+
+const leftOverlays = [
     {
-        group: "Tools",
-        id: "group-tools",
+        group: "Marker Actions",
+        id: "group-marker-actions",
         layers: [
             { name: "Add Marker", layer: L.layerGroup(), icon: '<span class="panel-icon no-checkbox">➕</span>' },
             { name: "Analyze Map Piece", layer: L.layerGroup(), icon: '<span class="panel-icon no-checkbox">🗺️</span>' },
@@ -226,8 +249,8 @@ const panelOverlays = [
 // Monkey-patch L.Control.PanelLayers to preserve group IDs
 const originalAddLayer = L.Control.PanelLayers.prototype._addLayer;
 L.Control.PanelLayers.prototype._addLayer = function (layerDef, overlay, groupName, collapsed) {
-    // Find the group definition to get its ID
-    const groups = overlay ? panelOverlays : panelBaseLayers;
+    // Find the group definition to get its ID from either overlay set or base layers
+    const groups = overlay ? [...rightOverlays, ...leftOverlays] : panelBaseLayers;
     const groupDef = groups.find(g => g.group === groupName);
     
     // Store group ID on the layer object for later retrieval during _update
@@ -236,7 +259,7 @@ L.Control.PanelLayers.prototype._addLayer = function (layerDef, overlay, groupNa
     return originalAddLayer.apply(this, arguments);
 };
 
-const panelControl = L.control.panelLayers(panelBaseLayers, panelOverlays, {
+const panelControl = L.control.panelLayers(panelBaseLayers, rightOverlays, {
     compact: true,
     collapsed: true,
     collapsibleGroups: true,
@@ -285,6 +308,9 @@ function handleOverlayAdd(event) {
     if (event.name === "Lat/Long lines") {
         storage.latlngOverlay = true;
     }
+    if (event.name === "Animated reefs") {
+        storage.animatedReefs = true;
+    }
     localStorage.setItem("storage", JSON.stringify(storage));
 }
 
@@ -297,6 +323,9 @@ function handleOverlayRemove(event) {
     }
     if (event.name === "Lat/Long lines") {
         storage.latlngOverlay = false;
+    }
+    if (event.name === "Animated reefs") {
+        storage.animatedReefs = false;
     }
     localStorage.setItem("storage", JSON.stringify(storage));
 }
@@ -324,19 +353,24 @@ map.on('baselayerchange', function (event) {
                     if (map.hasLayer(mutuallyExclusiveOverlays[o])) map.removeLayer(mutuallyExclusiveOverlays[o]);
                 }
                 if (map.hasLayer(latlngLayerInstance)) map.removeLayer(latlngLayerInstance);
+                if (map.hasLayer(reefsOverlay)) map.removeLayer(reefsOverlay);
             } else {
                 if (storage.latlngOverlay && !map.hasLayer(latlngLayerInstance)) map.addLayer(latlngLayerInstance);
                 
-                // If switching to Dynamic, ensure the default overlay is shown
+                // If switching to Dynamic, ensure the default overlay and reefs are shown
                 if (isDynamic) {
                     if (storage.defaultOverlay && !map.hasLayer(mutuallyExclusiveOverlays[storage.defaultOverlay])) {
                         map.addLayer(mutuallyExclusiveOverlays[storage.defaultOverlay]);
                     }
+                    if (storage.animatedReefs && !map.hasLayer(reefsOverlay)) {
+                        map.addLayer(reefsOverlay);
+                    }
                 } else {
-                    // If switching to Static, remove any active era overlays
+                    // If switching to Static, remove any active era overlays and reefs
                     for (let o in mutuallyExclusiveOverlays) {
                         if (map.hasLayer(mutuallyExclusiveOverlays[o])) map.removeLayer(mutuallyExclusiveOverlays[o]);
                     }
+                    if (map.hasLayer(reefsOverlay)) map.removeLayer(reefsOverlay);
                 }
             }
 
@@ -373,9 +407,12 @@ const setupInitialState = () => {
     else if (storage.baseLayer === "Compiled Map (Full, static)") document.body.classList.add('base-static');
     else {
         document.body.classList.add('base-dynamic');
-        // If initial load is dynamic, add the default era overlay
+        // If initial load is dynamic, add the default era overlay and reefs
         if (storage.defaultOverlay) {
             mutuallyExclusiveOverlays[storage.defaultOverlay].addTo(map);
+        }
+        if (storage.animatedReefs) {
+            reefsOverlay.addTo(map);
         }
     }
 
@@ -419,6 +456,31 @@ searchControl.on('search:locationfound', (e) => {
 
 map.addControl(searchControl);
 
+const panelMarkersControl = L.control.panelLayers(null, leftOverlays, {
+    compact: true,
+    collapsed: true,
+    collapsibleGroups: true,
+    position: 'topleft',
+    sortLayers: true
+}).addTo(map);
+
+// Performance: Disable animated reefs during movement/zoom
+map.on('move zoom', () => {
+    if (map.hasLayer(reefsOverlay)) {
+        isInternalSwitch = true;
+        map.removeLayer(reefsOverlay);
+        isInternalSwitch = false;
+    }
+});
+
+map.on('moveend zoomend', () => {
+    if (storage.animatedReefs && !map.hasLayer(reefsOverlay) && storage.baseLayer === "Compile Map (dynamic)") {
+        isInternalSwitch = true;
+        map.addLayer(reefsOverlay);
+        isInternalSwitch = false;
+    }
+});
+
 /* MARKER SYSTEM */
 
 L.Layer.include({
@@ -438,59 +500,182 @@ const icons = {
     family: L.icon({ iconUrl: 'images/family-icon.png', iconSize: [42, 50], iconAnchor: [21, 25], popupAnchor: [0, -25] }),
     missionFrom: L.icon({ iconUrl: 'images/missionfrom-icon.png', iconSize: [48, 48], iconAnchor: [24, 24], popupAnchor: [0, -24] }),
     missionTo: L.icon({ iconUrl: 'images/missionto-icon.png', iconSize: [48, 48], iconAnchor: [24, 24], popupAnchor: [0, -24] }),
+    informant: L.icon({ iconUrl: 'images/informant-icon.png', iconSize: [48, 48], iconAnchor: [24, 48], popupAnchor: [0, -48] }),
     fleet: L.icon({ iconUrl: 'images/fleet-icon.png', iconSize: [63, 40], iconAnchor: [30, 38], popupAnchor: [0, -38] }),
     train: L.icon({ iconUrl: 'images/train-icon.png', iconSize: [32, 68], iconAnchor: [16, 65], popupAnchor: [0, -50] })
 };
 
-function onEachMarkerFeature(feature, layer) {
-    let title = feature.properties.type.charAt(0).toUpperCase() + feature.properties.type.slice(1);
-    if (feature.properties.type === "family") title = `Long lost ${feature.properties.description}`;
+function getMarkerDisplayName(props) {
+    if (props.description) return props.description;
+    if (props.type === "informant") {
+        return props.isWife ? "Wife" : `Informant Lvl ${props.level || 1}`;
+    }
+    return props.type.charAt(0).toUpperCase() + props.type.slice(1);
+}
+
+function getMarkerPopupContent(feature) {
+    const type = feature.properties.type;
+    const desc = feature.properties.description;
+    const level = feature.properties.level;
+    const isWife = feature.properties.isWife;
+    let title = type.charAt(0).toUpperCase() + type.slice(1);
+
+    if (type === "treasure") title = "Pirate treasure";
+    else if (type === "inca") title = "Lost Inca treasure";
+    else if (type === "fleet") title = "Treasure Fleet";
+    else if (type === "train") title = "Silver train";
+    else if (type === "family") title = desc ? `Long lost ${desc}` : "Long lost family member";
+    else if (type === "evil") title = desc ? `The evil ${desc}` : "Evildoer";
+    else if (type === "informant") {
+        title = isWife ? "Wife" : `Informant - level ${level || 1}`;
+    }
     
-    let popupContent = `<b>${title}</b>`;
-    if (feature.properties.description && feature.properties.type !== "family") popupContent += `<p>${feature.properties.description}</p>`;
-    if (feature.properties.type === "missionsource") popupContent += `<p><a onClick="map.flyTo(markerGroup.getLayers().find(l=>l.getProps().type=='missiontarget').getLatLng())">Show target</a></p>`;
-    if (feature.properties.type === "missiontarget") popupContent += `<p><a onClick="map.flyTo(markerGroup.getLayers().find(l=>l.getProps().type=='missionsource').getLatLng())">Show start</a></p>`;
+    let popupContent = `<b class="marker-title-clickable" title="Click to edit">${title}</b>`;
+    // If description is already part of the title (family/evil), don't show it again in the body
+    if (desc && !["family", "evil"].includes(type)) popupContent += `<p>${desc}</p>`;
+    
+    if (feature.properties.city) {
+        popupContent += `<p>City: ${feature.properties.city}</p>`;
+    }
+    
+    // Only allow relocation for non-treasure/inca/family types
+    if (!["treasure", "inca", "family"].includes(feature.properties.type)) {
+        popupContent += `<p><a class="relocatemarker">Relocate to current city</a></p>`;
+    }
+
+    if (feature.properties.type === "missionsource") popupContent += `<p><a onClick="map.flyTo(markerGroup.getLayers().find(l=>l.getProps().type=='missiontarget').getLatLng(), 5)">Show target</a></p>`;
+    if (feature.properties.type === "missiontarget") popupContent += `<p><a onClick="map.flyTo(markerGroup.getLayers().find(l=>l.getProps().type=='missionsource').getLatLng(), 5)">Show start</a></p>`;
     
     popupContent += `<p><a class="deletemarker">Delete this marker</a></p>`;
-    layer.bindPopup(popupContent);
+    return popupContent;
+}
+
+function onEachMarkerFeature(feature, layer) {
+    layer.bindPopup(getMarkerPopupContent(feature));
+}
+
+// Spreads markers bound to the same city in an orbit to prevent overlap
+const markerSpiderLines = L.layerGroup().addTo(map);
+
+function recalculateOrbits() {
+    const cityMarkers = {};
+    markerSpiderLines.clearLayers();
+    
+    // Group markers by city
+    markerGroup.eachLayer(layer => {
+        const props = layer.getProps();
+        if (props.city) {
+            if (!cityMarkers[props.city]) cityMarkers[props.city] = [];
+            cityMarkers[props.city].push(layer);
+        }
+    });
+
+    // Apply angular offsets and draw connection lines
+    for (let city in cityMarkers) {
+        const layers = cityMarkers[city];
+        const cityLayer = citiesLayer.cities[city];
+        if (cityLayer) {
+            const center = cityLayer.getLatLng();
+            const radius = 0.14; // Halved radius for closer proximity
+            layers.forEach((layer, i) => {
+                // Distribute evenly with a base rotation and slight random jitter
+                const deg2rad = Math.PI / 180;
+                const baseAngle = 15 * deg2rad;
+                const jitter = (Math.random() * 20 - 10) * deg2rad;
+                
+                const angle = ((i / layers.length) * 2 * Math.PI) + baseAngle + jitter;
+                const newPos = [
+                    center.lat + radius * Math.sin(angle),
+                    center.lng + radius * Math.cos(angle)
+                ];
+                
+                layer.setLatLng(newPos);
+                
+                // Draw a thin connecting line
+                L.polyline([center, newPos], {
+                    color: '#8b0000', // Dark red to match active theme
+                    weight: 1.5,
+                    dashArray: '3, 3',
+                    opacity: 0.6,
+                    interactive: false
+                }).addTo(markerSpiderLines);
+            });
+        }
+    }
 }
 
 const markerGroup = L.geoJSON(null, {
     onEachFeature: onEachMarkerFeature,
     pointToLayer(feature, latlng) {
-        let options = { draggable: ["treasure", "inca", "family"].includes(feature.properties.type) };
+        let options = { 
+            draggable: ["treasure", "inca", "family"].includes(feature.properties.type) && !feature.properties.city,
+            autoPan: true
+        };
+        
         if (feature.properties.type === "treasure" || feature.properties.type === "inca") options.icon = icons.treasure;
         else if (feature.properties.type === "family") options.icon = icons.family;
         else if (feature.properties.type === "evil") options.icon = icons.enemy;
+        else if (feature.properties.type === "informant") options.icon = icons.informant;
         else if (feature.properties.type === "fleet") options.icon = icons.fleet;
         else if (feature.properties.type === "train") options.icon = icons.train;
         else if (feature.properties.type === "missionsource") options.icon = icons.missionFrom;
         else if (feature.properties.type === "missiontarget") options.icon = icons.missionTo;
+        
         return L.marker(latlng, options);
     }
 }).addTo(map);
 
+function updateMarkerInPanel(marker) {
+    const wasActive = map.hasLayer(marker); // Capture state BEFORE removal
+    isInternalSwitch = true;
+    try {
+        panelMarkersControl.removeLayer(marker);
+        const props = marker.getProps();
+        const name = getMarkerDisplayName(props);
+        panelMarkersControl.addOverlay({
+            name: `<span class="marker-link-text">${name}</span>`,
+            layer: marker,
+            group: "Markers",
+            active: wasActive, // Use captured state
+            icon: `<span class="panel-icon no-checkbox">${props.city ? '🏙️' : '📍'}</span>`
+        });
+
+        // Explicitly restore to map if it was active but the control stripped it
+        if (wasActive && !map.hasLayer(marker)) {
+            marker.addTo(map);
+        }
+    } finally {
+        isInternalSwitch = false;
+    }
+}
+
 // Sync markerGroup with Panel
 markerGroup.on("layeradd", (e) => {
-    const name = e.layer.getProps().description || e.layer.getProps().type;
-    panelControl.addOverlay({
+    const props = e.layer.getProps();
+    const name = getMarkerDisplayName(props);
+    panelMarkersControl.addOverlay({
         // Wrap the name in a class to identify it for custom click behavior
         name: `<span class="marker-link-text">${name}</span>`,
         layer: e.layer,
         group: "Markers",
-        icon: '<span class="panel-icon no-checkbox">📍</span>'
+        icon: `<span class="panel-icon no-checkbox">${props.city ? '🏙️' : '📍'}</span>`
     });
+    // Trigger orbit update after a small delay to ensure indexing is complete
+    setTimeout(recalculateOrbits, 0);
 });
 
 // Event delegation for custom marker interactions in the panel
 document.addEventListener('click', (event) => {
-    if (event.target.classList.contains('marker-link-text')) {
+    const item = event.target.closest('.leaflet-panel-layers-item');
+    if (item && item.querySelector('.marker-link-text')) {
+        // If it's the checkbox, let the plugin handle it
+        if (event.target.tagName === 'INPUT') return;
+
+        // For anything else in the marker item (label, icon, text), fly to it and prevent toggling
         event.preventDefault();
         event.stopPropagation();
         
-        // Find the sibling input to get the Leaflet layer ID (stamp)
-        const item = event.target.closest('.leaflet-panel-layers-item');
-        const input = item?.querySelector('input');
+        const input = item.querySelector('input');
         if (input && input.value) {
             const marker = markerGroup.getLayer(input.value);
             if (marker) {
@@ -503,15 +688,132 @@ document.addEventListener('click', (event) => {
 }, true); // Use capture to intercept before the plugin toggles the layer
 
 markerGroup.on("layerremove", (e) => {
-    panelControl.removeLayer(e.layer);
+    panelMarkersControl.removeLayer(e.layer);
+    setTimeout(recalculateOrbits, 0);
 });
 
 let storedMarkers = localStorage.getItem("markers");
-if (storedMarkers) markerGroup.addData(JSON.parse(storedMarkers));
+if (storedMarkers) {
+    markerGroup.addData(JSON.parse(storedMarkers));
+    setTimeout(recalculateOrbits, 100); // Ensure city data is loaded
+}
+
+function getExistingWife() {
+    let wife = null;
+    markerGroup.eachLayer(l => {
+        if (l.getProps().type === "informant" && l.getProps().isWife) wife = l;
+    });
+    return wife;
+}
 
 markerGroup.on("popupopen", (e) => {
-    const delBtn = e.popup._container.querySelector(".deletemarker");
-    if (delBtn) delBtn.onclick = () => markerGroup.removeLayer(e.popup._source);
+    const source = e.popup._source;
+    const container = e.popup._container;
+    
+    const delBtn = container.querySelector(".deletemarker");
+    if (delBtn) delBtn.onclick = () => markerGroup.removeLayer(source);
+    
+    const titleEl = container.querySelector(".marker-title-clickable");
+    if (titleEl) {
+        titleEl.onclick = () => {
+            const props = source.getProps();
+            const currentDesc = props.description || "";
+            const currentLevel = props.level || 1;
+            const currentWife = props.isWife || false;
+            
+            const otherWife = getExistingWife();
+            const wifeDisabled = (otherWife && otherWife !== source) ? 'disabled' : '';
+            const wifeTitle = wifeDisabled ? 'title="Demote existing wife first"' : '';
+            
+            let editContent = `
+                <div class="marker-edit-container">
+                    <input type="text" class="marker-edit-input" value="${currentDesc}" placeholder="Description...">
+            `;
+            
+            if (props.type === "informant") {
+                editContent += `
+                    <div class="informant-fields">
+                        <label>Lvl: <select class="marker-edit-level">
+                            <option value="1" ${currentLevel == 1 ? 'selected' : ''}>1</option>
+                            <option value="2" ${currentLevel == 2 ? 'selected' : ''}>2</option>
+                            <option value="3" ${currentLevel == 3 ? 'selected' : ''}>3</option>
+                            <option value="4" ${currentLevel == 4 ? 'selected' : ''}>4</option>
+                        </select></label>
+                        <label ${wifeTitle}>Wife: <input type="checkbox" class="marker-edit-wife" ${currentWife ? 'checked' : ''} ${wifeDisabled}></label>
+                    </div>
+                `;
+            }
+            
+            editContent += `
+                    <button class="marker-edit-save">ok</button>
+                </div>
+            `;
+            
+            titleEl.innerHTML = editContent;
+            
+            const input = titleEl.querySelector(".marker-edit-input");
+            const levelSelect = titleEl.querySelector(".marker-edit-level");
+            const wifeCheck = titleEl.querySelector(".marker-edit-wife");
+            const saveBtn = titleEl.querySelector(".marker-edit-save");
+            
+            input.focus();
+            input.onclick = (ev) => ev.stopPropagation(); // Prevent closing popup
+            if (levelSelect) levelSelect.onclick = (ev) => ev.stopPropagation();
+            if (wifeCheck) wifeCheck.onclick = (ev) => ev.stopPropagation();
+            
+            const save = () => {
+                const isWife = wifeCheck ? wifeCheck.checked : false;
+                
+                source.setProps({ 
+                    description: input.value,
+                    level: levelSelect ? parseInt(levelSelect.value) : undefined,
+                    isWife: isWife
+                });
+                
+                source.setPopupContent(getMarkerPopupContent(source.feature));
+                updateMarkerInPanel(source);
+                localStorage.setItem("markers", JSON.stringify(markerGroup.toGeoJSON()));
+            };
+
+            saveBtn.onclick = (ev) => {
+                ev.stopPropagation();
+                save();
+            };
+            
+            input.onkeyup = (ev) => {
+                if (ev.key === "Enter") save();
+                if (ev.key === "Escape") source.setPopupContent(getMarkerPopupContent(source.feature));
+            };
+        };
+    }
+    
+    const relBtn = container.querySelector(".relocatemarker");
+    if (relBtn) {
+        if (lastClickedCity) {
+            relBtn.innerText = `Relocate to ${lastClickedCity.properties.name}`;
+        }
+        relBtn.onclick = () => {
+            if (lastClickedCity) {
+                // Strict type check during relocation
+                if (["treasure", "inca", "family"].includes(source.getProps().type)) {
+                    showToast("Treasure/Family cannot be bound to cities!");
+                    return;
+                }
+                source.setProps({ city: lastClickedCity.properties.name });
+                
+                // Refresh popup content to reflect new city
+                source.setPopupContent(getMarkerPopupContent(source.feature));
+                
+                showToast(`Relocated to ${lastClickedCity.properties.name}`);
+                recalculateOrbits();
+                
+                // Close popup after relocation to finalize the state change visually
+                source.closePopup();
+            } else {
+                showToast("Click a city first to relocate!");
+            }
+        };
+    }
 });
 
 // Marker Add Dialog
@@ -520,7 +822,7 @@ let addMarkerControl = null;
 function startAddMarkerMode() {
     if (!addMarkerControl) {
         addMarkerControl = L.control.dialog({
-            size: [300, 180],
+            size: [300, 220],
             minSize: [250, 150],
             maxSize: [400, 300],
             anchor: [100, 100],
@@ -537,42 +839,101 @@ function startAddMarkerMode() {
                     ${["treasure", "inca", "evil", "family", "fleet", "train", "missionsource", "missiontarget", "informant"]
                         .map(t => `<option value="${t}">${t}</option>`).join('')}
                 </select>
+                
+                <div id="informantAddFields" class="informant-fields hidden">
+                    <label>Lvl: <select id="markerLevel">
+                        <option value="1">1</option>
+                        <option value="2">2</option>
+                        <option value="3">3</option>
+                        <option value="4">4</option>
+                    </select></label>
+                    <label>Wife: <input type="checkbox" id="markerWife"></label>
+                </div>
+
                 <input id="markerDesc" type="text" placeholder="Description..." style="width:100%; margin-top:10px; padding: 5px;">
-                <div style="color:red; font-size:11px; margin-top:10px; font-weight: bold;">Click on map to place</div>
+                <div style="color:red; font-size:11px; margin-top:10px; font-weight: bold;">Click on a CITY or any map location</div>
             </form>
         `;
         addMarkerControl.setContent(content);
         
+        const typeSelect = content.querySelector("#markerType");
+        const infoFields = content.querySelector("#informantAddFields");
+        typeSelect.onchange = () => {
+            infoFields.classList.toggle("hidden", typeSelect.value !== "informant");
+        };
+
         // Leaflet.Dialog fires events on the map object, and the dialog instance is the event data
         map.on('dialog:closed', (e) => {
             if (e === addMarkerControl) cleanupAddMarkerMode();
         });
     }
 
+    isAddingMarker = true;
     addMarkerControl.open();
+    
+    // Disable wife option if one already exists
+    const wifeCheck = document.getElementById("markerWife");
+    if (wifeCheck) {
+        const wife = getExistingWife();
+        wifeCheck.disabled = !!wife;
+        wifeCheck.parentElement.title = wife ? "Demote existing wife first" : "";
+    }
+
     map.on("click", onMapClickForMarker);
     map.getPane("overlayPane").classList.add("cursor-add-shortcut");
 }
 
 function onMapClickForMarker(e) {
+    addMarkerToTarget(e.latlng, null);
+}
+
+function addMarkerToTarget(latlng, cityFeature) {
     const type = document.getElementById("markerType").value;
     const desc = document.getElementById("markerDesc").value;
+    const level = document.getElementById("markerLevel").value;
+    const isWife = document.getElementById("markerWife").checked;
+    
+    let properties = { 
+        type: type, 
+        description: desc,
+        level: type === "informant" ? parseInt(level) : undefined,
+        isWife: type === "informant" ? isWife : undefined
+    };
+    let geometry = { type: "Point", coordinates: [latlng.lng, latlng.lat] };
+    
+    // ONLY bind to city if the type is NOT coordinate-only
+    if (cityFeature && !["treasure", "inca", "family"].includes(type)) {
+        properties.city = cityFeature.properties.name;
+    }
+
     if (type !== "informant") {
         const old = markerGroup.getLayers().find(l => l.getProps().type === type);
         if (old) markerGroup.removeLayer(old);
     }
+
     markerGroup.addData({
         type: "Feature",
-        properties: { type: type, description: desc },
-        geometry: { type: "Point", coordinates: [e.latlng.lng, e.latlng.lat] }
+        properties: properties,
+        geometry: geometry
     });
     
     // Explicit cleanup
+    const descInput = document.getElementById("markerDesc");
+    if (descInput) descInput.value = "";
+    const wifeCheck = document.getElementById("markerWife");
+    if (wifeCheck) wifeCheck.checked = false;
+    
     cleanupAddMarkerMode();
     if (addMarkerControl) addMarkerControl.close();
+
+    // Refresh to trigger orbital recalculation
+    const all = markerGroup.toGeoJSON();
+    markerGroup.clearLayers();
+    markerGroup.addData(all);
 }
 
 function cleanupAddMarkerMode() {
+    isAddingMarker = false;
     map.off("click", onMapClickForMarker);
     map.getPane("overlayPane").classList.remove("cursor-add-shortcut");
 }
